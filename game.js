@@ -1,7 +1,7 @@
 /*
-  백석기계공업고등학교 · 탈출 어드벤처 PART 01
+  돌이킬 수 있을지도 모를 걸음 · STAGE 01–03
   HTML5 Canvas / dependency-free / GitHub Pages ready
-  Source of dialogue and puzzles: "게임제작 1.txt"
+  Source of dialogue and puzzles: "게임제작 1.txt", "게임제작 2.txt"
 */
 (() => {
 'use strict';
@@ -13,6 +13,7 @@ const bgm = $('bgm');
 const stairSound = $('stairSound');
 const MAP_PATHS = {classroom:'assets/maps/classroom.webp',hallway:'assets/maps/hallway.webp',stairs:'assets/maps/stairs.webp',artroom:'assets/maps/artroom.webp'};
 const CHAR_PATH = 'assets/characters/mugyeol.png';
+const TAEHA_PATH = 'assets/characters/taeha.png';
 const ITEMS = {
   paper:{name:'꼬깃꼬깃하게 접힌 종이',image:'paper.webp',desc:'정성 어린 손길로 그린 초상화.'},
   cigarettes:{name:'담배',image:'cigarettes.webp',desc:'기태하의 책상 서랍에서 발견한 멘솔 담배.'},
@@ -30,7 +31,7 @@ const ROSTER = [
 ];
 const MAP_INFO = {
   classroom:{label:'3학년 4반 · 교실',stage:'STAGE 01',w:1536,h:1024,
-    bound:{left:138,right:1390,top:280,bottom:750},
+    bound:{left:138,right:1390,top:235,bottom:750},
     blocks:[
       {x:235,y:270,w:310,h:18},{x:675,y:275,w:164,h:25},
       ...[382,539,689,850,1003,1161].flatMap(x=>[326,396,469,581,653].map(y=>({x:x-50,y:y-34,w:100,h:73}))),
@@ -43,12 +44,15 @@ const MAP_INFO = {
   stairs:{label:'계단',stage:'STAGE 02',w:1536,h:1024,
     bound:{left:115,right:1370,top:318,bottom:978},
     blocks:[{x:120,y:0,w:680,h:675},{x:0,y:0,w:115,h:1024},{x:1380,y:0,w:156,h:1024}]},
-  artroom:{label:'미술실 · PART 02 대기',stage:'STAGE 03',w:1536,h:1024,
+  artroom:{label:'미술실 · 연옥에서',stage:'STAGE 03',w:1536,h:1024,
     bound:{left:129,right:1393,top:335,bottom:937},
     blocks:[{x:455,y:265,w:520,h:105},{x:1270,y:144,w:180,h:210},
       {x:0,y:395,w:140,h:290},
-      {x:399,y:364,w:122,h:205},{x:658,y:355,w:148,h:200},{x:971,y:357,w:140,h:210},
-      {x:512,y:545,w:118,h:187},{x:873,y:542,w:126,h:188},
+      // Tight collision around the *solid* upper parts of the easels, not
+      // their entire painted silhouettes. Otherwise the middle lane was
+      // disconnected and the player could not reach Taeha at the window.
+      {x:423,y:379,w:79,h:133},{x:692,y:380,w:94,h:133},{x:996,y:383,w:83,h:133},
+      {x:546,y:560,w:74,h:139},{x:902,y:558,w:76,h:139},
       {x:272,y:753,w:215,h:122},{x:1060,y:751,w:232,h:128}]
   }
 };
@@ -60,7 +64,14 @@ const lockAssets = {
 };
 const images={};
 const sprite=new Image(); sprite.src=CHAR_PATH;
+// This is the 528×944 transparent sprite sheet extracted from the user's
+// original image, with 3 complete 176×236 cells in each of 4 direction rows.
+const taehaSprite=new Image();taehaSprite.src=TAEHA_PATH;
 const SPRITE_TILE={w:176,h:236};
+const BOARD_POINT={x:1233,y:269};
+const TAEHA_WINDOW={x:595,y:408};
+let viewport={w:1536,h:864};
+let pickupTimer=0;
 for(const [id,path] of Object.entries(MAP_PATHS)){ const img=new Image();img.src=path;images[id]=img; }
 const darkLayer=document.createElement('canvas'); const dc=darkLayer.getContext('2d');
 let prevTime=0, toastTimer=0, switchTimer=0;
@@ -70,27 +81,55 @@ const S = {
   explored:false,stage1Clear:false,stage2Clear:false,visitedCats:new Set(),visitedDesks:new Set(),visitedLockers:new Set(),
   flags:{im:false,green:false,bulletin:false,trash:false,hallPhoto:false},inventory:new Set(),
   dlg:null,autoPath:[],afterWalk:null,pendingTarget:null,transitioning:false,muted:false,debug:false,
+  artroomUnlocked:false,artroomIntroSeen:false,taehaMet:false,following:false,
+  endingStarted:false,failureDark:false,artroomRevealAt:0,
+  taeha:{x:TAEHA_WINDOW.x,y:TAEHA_WINDOW.y,face:0,walking:false,walkClock:0},followTrail:[],
   activeTooltip:null,mobileKeys:new Set()
 };
-const isOverlayOpen=()=>['inventoryOverlay','lockerOverlay','lockOverlay','endingOverlay','helpOverlay','rosterOverlay'].some(id=>!$(id).classList.contains('hidden'));
+const isOverlayOpen=()=>['inventoryOverlay','lockerOverlay','lockOverlay','endingOverlay','rosterOverlay'].some(id=>!$(id).classList.contains('hidden'));
 const safeText=(str)=>String(str);
 const itemSrc=(id)=>'assets/items/'+ITEMS[id].image;
 function toast(text,ms=2400){ const el=$('toast');el.textContent=text;el.classList.remove('hidden');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.add('hidden'),ms); }
 function updateHeader(){ const m=MAP_INFO[S.map];$('stageCaption').textContent=m.stage;$('sceneName').textContent=m.label;$('statusLine').textContent='강무결 · '+m.label;$('itemCount').textContent=S.inventory.size; }
-function configureCanvas(){ const info=MAP_INFO[S.map]; canvas.width=info.w;canvas.height=info.h;canvas.style.aspectRatio=`${info.w}/${info.h}`; }
+function configureCanvas(){
+  // Desktop is 16:9; portrait phones get a taller, zoomed-in camera.
+  const portrait=window.matchMedia('(max-width: 760px) and (orientation: portrait)').matches;
+  viewport=portrait?{w:720,h:960}:{w:1536,h:864};
+  if(canvas.width!==viewport.w)canvas.width=viewport.w;
+  if(canvas.height!==viewport.h)canvas.height=viewport.h;
+  canvas.style.aspectRatio=`${viewport.w}/${viewport.h}`;
+}
+function camera(){
+  const map=MAP_INFO[S.map],ratio=viewport.w/viewport.h;
+  let w=Math.min(viewport.w,map.w),h=w/ratio;
+  if(h>map.h){h=map.h;w=h*ratio;}
+  const clamp=(v,low,high)=>Math.min(high,Math.max(low,v));
+  return {
+    x:clamp(S.px-w*.5,0,map.w-w),
+    y:clamp(S.py-h*.55,0,map.h-h),w,h
+  };
+}
+function pointerToWorld(e){
+  const r=canvas.getBoundingClientRect(),cam=camera();
+  return {x:cam.x+(e.clientX-r.left)/r.width*cam.w,y:cam.y+(e.clientY-r.top)/r.height*cam.h};
+}
 function resetState(){
   S.map='classroom'; S.px=1264;S.py=710;S.face=0;S.frame=1;S.walkClock=0;S.walking=false;
   S.explored=false;S.stage1Clear=false;S.stage2Clear=false;S.visitedCats=new Set();S.visitedDesks=new Set();S.visitedLockers=new Set();
   S.flags={im:false,green:false,bulletin:false,trash:false,hallPhoto:false};S.inventory=new Set();
   S.dlg=null;S.autoPath=[];S.afterWalk=null;S.pendingTarget=null;S.transitioning=false;
-  pressed.clear();S.mobileKeys.clear(); hideAllOverlays(); closeDialog();configureCanvas();updateHeader();
+  S.artroomUnlocked=false;S.artroomIntroSeen=false;S.taehaMet=false;S.following=false;
+  S.endingStarted=false;S.failureDark=false;S.artroomRevealAt=0;
+  S.taeha={x:TAEHA_WINDOW.x,y:TAEHA_WINDOW.y,face:0,walking:false,walkClock:0};S.followTrail=[];
+  pressed.clear();S.mobileKeys.clear(); hideAllOverlays(); closeDialog();hidePickup();configureCanvas();updateHeader();
 }
-function hideAllOverlays(){ for(const id of ['inventoryOverlay','lockerOverlay','lockOverlay','endingOverlay','helpOverlay','rosterOverlay']) $(id).classList.add('hidden'); }
+function hideAllOverlays(){ for(const id of ['inventoryOverlay','lockerOverlay','lockOverlay','endingOverlay','rosterOverlay']) $(id).classList.add('hidden'); }
 function showDialogBox(){ $('dialogueBox').classList.remove('hidden'); }
 function closeDialog(){S.dlg=null;$('rosterPeek').classList.add('hidden');$('dialogueBox').classList.add('hidden');$('choiceArea').classList.add('hidden');$('choiceArea').replaceChildren();}
 function dismissMoveMenu(){if(S.dlg?.kind==='choices'&&S.dlg.movable){closeDialog();return true;}return false;}
 function pages(list,after=()=>{},opts={}){
-  const sequence=(Array.isArray(list)?list:[list]).filter(t=>t!==undefined&&t!==null).map(x=>safeText(x));
+  const sequence=(Array.isArray(list)?list:[list]).filter(t=>t!==undefined&&t!==null).map(x=>
+    typeof x==='object'?{text:safeText(x.text??''),image:x.image||null}: {text:safeText(x),image:null});
   if(!sequence.length){after();return;}
   S.autoPath=[];S.afterWalk=null;
   S.dlg={kind:'pages',list:sequence,idx:0,after,speaker:opts.speaker??'강무결',photo:!!opts.photo};
@@ -105,11 +144,16 @@ function renderDialogue(){
   if(!S.dlg){closeDialog();return;}
   const d=S.dlg;showDialogBox();$('speaker').textContent=d.speaker;$('rosterPeek').classList.toggle('hidden',!d.photo);
   const ch=$('choiceArea');ch.replaceChildren();
+  const illustration=$('dialogueIllustration');
   if(d.kind==='pages'){
-    $('dialogueBody').textContent=d.list[d.idx];$('dialogueCounter').textContent=`${d.idx+1} / ${d.list.length}`;
+    const page=d.list[d.idx];
+    $('dialogueBody').textContent=page.text;$('dialogueCounter').textContent=`${d.idx+1} / ${d.list.length}`;
+    if(page.image){illustration.src=page.image;illustration.classList.remove('hidden');}
+    else {illustration.classList.add('hidden');illustration.removeAttribute('src');}
     ch.classList.add('hidden');$('nextButton').classList.remove('hidden');
   } else {
     $('dialogueBody').textContent=d.prompt;$('dialogueCounter').textContent='선택';
+    illustration.classList.add('hidden');illustration.removeAttribute('src');
     ch.classList.remove('hidden');$('nextButton').classList.add('hidden');
     d.entries.forEach((entry,i)=>{
       const b=document.createElement('button');b.type='button';b.className='choice-button';b.textContent=`${i+1}. ${entry.text}`;
@@ -127,7 +171,18 @@ function skipDialogue(){
   if(d.kind==='choices'){toast('선택지는 직접 골라야 합니다.');return;}
   const fn=d.after;closeDialog();fn();
 }
-function acquire(id){if(S.inventory.has(id))return false;S.inventory.add(id);updateHeader();toast(`아이템 획득 · ${ITEMS[id].name}`,2600);return true;}
+function hidePickup(){clearTimeout(pickupTimer);$('itemPickup').classList.add('hidden');}
+function showPickup(id){
+  const item=ITEMS[id],el=$('itemPickup');
+  clearTimeout(pickupTimer);
+  $('pickupImage').src=itemSrc(id);$('pickupImage').alt=item.name;
+  $('pickupName').textContent=item.name;
+  el.classList.remove('hidden');
+  // Replay entrance animation for repeated acquisitions.
+  el.classList.remove('pickup-animate');void el.offsetWidth;el.classList.add('pickup-animate');
+  pickupTimer=setTimeout(()=>el.classList.add('hidden'),3800);
+}
+function acquire(id){if(S.inventory.has(id))return false;S.inventory.add(id);updateHeader();showPickup(id);return true;}
 function gainPages(id,following,after=exploreMenu){
   const isNew=acquire(id);
   pages([...(isNew?[`아이템 획득 「${ITEMS[id].name}」`]:[]),...following],after);
@@ -152,6 +207,7 @@ async function tryPlayMusic(){
   try{await bgm.play();$('musicLabel').textContent=' 음악 켜짐';}catch{toast('음악을 재생하려면 오른쪽 위의 ♫ 버튼을 누르세요.',3800);}
 }
 function playStairSound(){
+  if(S.muted)return;
   stairSound.pause();stairSound.currentTime=0;stairSound.volume=.95;
   bgm.volume=.24;stairSound.play().catch(()=>{});
   stairSound.onended=()=>{bgm.volume=.48;};
@@ -165,7 +221,6 @@ function initialChoices(){
 }
 function revealRoom(){
   S.explored=true;
-  toast('교실을 둘러보자. 방향키로 이동하거나 사물을 클릭하세요.',3000);
   exploreMenu();
 }
 function exploreMenu(){
@@ -236,7 +291,7 @@ function investigateTaehaDesk(){
   ],exploreMenu));
 }
 function investigateBoard(){
-  pages(['게시판 가까이 가 보자.'],()=>walkTo(1260,318,readBoard));
+  pages(['게시판 가까이 가 보자.'],()=>walkTo(BOARD_POINT.x,BOARD_POINT.y,readBoard));
 }
 function readBoard(){
   S.visitedCats.add('board');S.flags.bulletin=true;
@@ -262,7 +317,7 @@ function openLockerList(){
     const b=document.createElement('button');b.type='button';b.className='locker-cell';
     b.textContent=name;
     if(S.visitedLockers.has(name)&&name!=='명예희'){
-      b.classList.add('marked');const mark=document.createElement('span');mark.className='red-x';mark.textContent='✕';b.appendChild(mark);
+      b.classList.add('marked');const mark=document.createElement('span');mark.className='red-x';mark.textContent='✕';mark.setAttribute('aria-hidden','true');b.appendChild(mark);
     }
     b.onclick=()=>investigateLocker(name);
     grid.appendChild(b);
@@ -276,7 +331,7 @@ function investigateLocker(name){
   if(name==='명그린')S.flags.green=true;
   const resume=openLockerList;
   const lines={
-    '강윤혜':['윤혜의 사물함에는 D7이라고 적힌 쪽지가 있었다.\n쪽지 뒷면에는 4월이라고 적혀 있다.'],
+    '강윤혜':['윤혜의 사물함에는 D7이라고 적힌 쪽지가 있었다.\n쪽지 뒷면에는 익숙한 이름들이 적혀 있다.','금하제, 이청우, 한도윤.'],
     '임은재':['은재의 사물함에는 쪽지가 하나 있었다.\n쪽지에는 이렇게 적혀 있었다.','나도 몰랐어.','쪽지 뒷면에는 아무것도 적혀 있지 않다.'],
     '기태하':['기태하의 사물함에는 체육복이 들어 있다.\n작년 초봄, 내가 아무리 질색해도 걸치고 있으라며 억지로 쥐여 주었던 것이다.\n헤어진 이후 기태하가 체육복을 입었는지는 모르겠다.','기억하고 싶지 않은 걸까.'],
     '주인하':['인하의 사물함에는 다음의 물건들이 들어 있었다.\n체육복. 인하가 교복 위에 자주 걸치고 있었던 체육복이다.\n과자와 젤리. 언젠가 인하가 나눠 주었던 기억이 있다.\n노트 몇 권. 몇 페이지 사용하지 않은 노트들이다. 수업 시간에 낙서를 했던 것 같다.\n붕대와 밴드. 이걸 사용할 일이 없어야 할 텐데.','사물함을 닫았다.'],
@@ -339,10 +394,25 @@ function unlockClass(){
     switchMap('hallway',405,580,false,()=>pages(['<STAGE 2> 삼도천 혹은 스틱스 강']));
   });
 }
+function classroomDoor(){
+  if(S.stage1Clear){switchMap('hallway',405,580);return;}
+  openLock();
+}
 function hallwayPhoto(){
   if(S.map!=='hallway')return;
   S.flags.hallPhoto=true;
   pages(['그리운 얼굴들이다.','그래, 다음 세계가 있다면 담임 선생님까지 함께.......'],()=>{},{photo:true});
+}
+function hallwayClassDoor(){
+  if(S.map!=='hallway')return;
+  S.flags.hallPhoto=true;
+  pages(['그리운 얼굴들이다.','그래, 다음 세계가 있다면 담임 선생님까지 함께.......'],()=>{
+    if(!S.stage2Clear)return;
+    choices('어떻게 할까?',[
+      {text:'3학년 4반 교실로 돌아간다.',action:()=>switchMap('classroom',1267,520)},
+      {text:'복도에 머문다.',action:()=>{}}
+    ]);
+  },{photo:true});
 }
 function recycling(){
   if(S.map!=='hallway')return;
@@ -350,7 +420,9 @@ function recycling(){
 }
 function enterStairs(){
   if(S.map!=='hallway'||S.transitioning)return;
-  switchMap('stairs',735,810,true,()=>stairChoices());
+  switchMap('stairs',735,810,true,()=>{
+    if(!S.stage2Clear)stairChoices();
+  });
 }
 function stairChoices(){
   pages(['계단이다. 위로 올라가거나 아래로 내려갈 수 있다.\n어떻게 하지?'],()=>choices('어떻게 하지?',[
@@ -359,12 +431,140 @@ function stairChoices(){
   ]));
 }
 function ascendStairs(){
+  if(S.stage2Clear){
+    switchMap('artroom',762,876,false,enterArtroom);
+    return;
+  }
   S.stage2Clear=true;
-  pages(['<STAGE 2> CLEAR'],()=>{
-    switchMap('artroom',762,876,false,()=>{
-      toast('미술실 도착 · 이후 전개는 「게임제작 2.txt」에 이어집니다.',4400);
-    });
+  pages(['<STAGE 2> CLEAR'],()=>switchMap('artroom',762,876,false,enterArtroom));
+}
+
+// STAGE 3 — 연옥에서. Stage 1 and 2 remain traversable after clearing, so
+// a player without the keyring can go back to the classroom to retrieve it.
+function enterArtroom(){
+  S.following=false;
+  S.taeha.walking=false;
+  S.taeha.x=TAEHA_WINDOW.x;S.taeha.y=TAEHA_WINDOW.y;S.taeha.face=0;
+  S.followTrail=[];
+  if(S.artroomUnlocked)return;
+  if(!S.artroomIntroSeen){
+    S.artroomIntroSeen=true;
+    pages([
+      '<STAGE 3> 연옥에서',
+      '계단을 오르니 미술실이 도착했다.',
+      '미술실 문은 잠겨 있었다.',
+      '내가 가지고 있는 물건이 도움이 될까?'
+    ],artroomItemChoices);
+  }else{
+    pages(['미술실 문은 잠겨 있었다.','내가 가지고 있는 물건이 도움이 될까?'],artroomItemChoices);
+  }
+}
+function artroomItemChoices(){
+  if(S.map!=='artroom'||S.artroomUnlocked)return;
+  const order=['knife','cigarettes','keyring','bottle','paper'];
+  const available=order.filter(id=>S.inventory.has(id));
+  const entries=available.map(id=>({text:ITEMS[id].name,action:()=>tryArtroomItem(id)}));
+  entries.push({text:'계단으로 돌아간다.',action:returnToStairs});
+  choices('어떤 물건을 사용해 볼까?',entries);
+}
+function tryArtroomItem(id){
+  if(id!=='keyring'){
+    pages(['이 물건은 미술실을 여는 데 도움이 되지 않을 것 같다.\n다른 물건을 사용해 보자.'],artroomItemChoices);
+    return;
+  }
+  pages([
+    '예희의 사물함에서 발견한 열쇠들이 도움이 될 것 같다.',
+    '꾸러미에 걸려 있는 열쇠들을 하나씩 살펴보았다.\n교무실, 보건실, 선도부실.......\n\n그리고 미술실.',
+    '열쇠를 문에 꽂아 넣었다.\n\n달칵.',
+    '미술실 문이 열렸다.'
+  ],()=>{
+    S.artroomUnlocked=true;
+    S.artroomRevealAt=performance.now();
+    S.taeha.x=TAEHA_WINDOW.x;S.taeha.y=TAEHA_WINDOW.y;
   });
+}
+function meetTaeha(){
+  if(S.map!=='artroom'||!S.artroomUnlocked||S.taehaMet||S.following||S.endingStarted)return;
+  S.taehaMet=true;
+  pages([
+    '기태하: 하여튼 말 더럽게 안 듣지. 늦게 오라니까 왜 벌써 와 가지고.\n강무결: .......',
+    '기태하: 야, 담배 한 가치 적선해.\n기태하: 내 담배 다 분질러 버렸던 것 알잖냐.'
+  ],cigaretteChoices,{speaker:'기태하 · 강무결'});
+}
+function cigaretteChoices(){
+  choices('어떻게 할까?',[
+    {text:'담배를 건넨다.',action:giveCigarette},
+    {text:'담배를 건네지 않는다.',action:refuseCigarette}
+  ],{speaker:'강무결'});
+}
+function giveCigarette(){
+  if(!S.inventory.has('cigarettes')){
+    pages(['담배를 가지고 있지 않다.'],cigaretteChoices);
+    return;
+  }
+  // Keep the actual user-supplied item visible as its own skippable page.
+  pages([{text:'담배',image:itemSrc('cigarettes')}],()=>pages([
+    '담배를 하나 꺼내 기태하에게 건넸다.\n기태하는 주머니에서 라이터를 꺼내 능숙하게 불을 붙였다.',
+    '아주 깊게 연기를 빨아들이고, 아주 길게 연기를 뱉었다.\n회개를 아주 길게 하는 것처럼.',
+    '기태하: 기다렸어.\n강무결: 얼마나?',
+    '기태하: 몰라. 헤아리다가 까먹음.\n기태하: ...... 니랑 같이 가고 싶어서.',
+    '기태하: 애 혼자 절벽에 두고 왔으니까.',
+    '강무결: 바보. 그러니까 동맹이라도 맺었으면 됐잖아.\n기태하: 야, 니 다치는 꼴을 내가 어떻게 봐.',
+    '기태하의 담배가 빠르게 타들어 간다.\n입이 자꾸 마르는 기분이었다.\n\n샐쭉 웃는 상판이 얄밉다.',
+    '기태하: 역시 뒈지기 전에 혀도 섞을 걸 그랬지.\n강무결: 미친 새끼. 죽어.',
+    '기태하가 손을 뻗는다.\n그날 밤처럼 손을 잡았다.'
+  ],startFollowing,{speaker:'기태하 · 강무결'}));
+}
+function refuseCigarette(){
+  pages([
+    '기태하: 까비. 입 존나 텁텁했는데.\n강무결: 뒈져서도 담배부터 찾는 것 징글징글해.',
+    '기태하: 징글징글한 새끼 상판 또 보는 건?\n강무결: ......'
+  ],()=>choices('어떻게 대답할까?',[
+    {text:'니 따라서 온 거라니까.',action:followingWithoutCigarette},
+    {text:'좋을 대로 생각해.',action:partingEnding}
+  ],{speaker:'강무결'}),{speaker:'기태하 · 강무결'});
+}
+function followingWithoutCigarette(){
+  pages([
+    '기태하: 기다렸어.\n강무결: 얼마나?',
+    '기태하: 몰라. 헤아리다가 까먹음.\n기태하: ...... 니랑 같이 가고 싶어서.',
+    '기태하: 애 혼자 절벽에 두고 왔으니까.',
+    '강무결: 바보. 그러니까 동맹이라도 맺었으면 됐잖아.\n기태하: 야, 니 다치는 꼴을 내가 어떻게 봐.',
+    '샐쭉 웃는 상판이 얄밉다.',
+    '기태하: 역시 뒈지기 전에 혀도 섞을 걸 그랬지.\n강무결: 미친 새끼. 죽어.',
+    '기태하가 손을 뻗는다.\n그날 밤처럼 손을 잡았다.'
+  ],startFollowing,{speaker:'기태하 · 강무결'});
+}
+function startFollowing(){
+  S.following=true;
+  S.taeha.face=0;
+  // Only track the player's visited route. Including Taeha's initial
+  // coordinate here would anchor the follower permanently to the window.
+  S.followTrail=[{x:S.px,y:S.py}];
+}
+function partingEnding(){
+  S.endingStarted=true;
+  pages([
+    '기태하: 빨라도 너무 빨리 왔잖냐, 무결아.\n강무결: .......\n기태하: 지옥 떨어지기 전에 니 한 번 더 보고 싶었어.\n기태하: 그래서 기다렸다.',
+    '강무결: 이게 진짜 마지막이야?\n기태하: 뭐, 다음 세계 그딴 게 있으면 또 모르지.\n기태하: 교실로 돌아가. 말 들어.',
+    '무어라 대답하기도 전에 기태하는 나를 미술실 문 밖으로 떠밀었다.\n이 새끼는 뒈졌는데 힘이 어디서 나오지.\n\n미술실 문이 닫힌다.\n샐쭉 웃는 상판이 오늘처럼 미웠던 적이 없었다.'
+  ],()=>{
+    S.failureDark=true;
+    pages([
+      '<엔딩 4> 갈림길',
+      '주변이 삽시간에 어두워졌다.\n미술실 문에 매달렸다.\n\n덜컹덜컹.',
+      '미술실 문이 열리지 않는다.\n기태하의 이름을 몇 번이고 불렀다.\n\n기태하가 대답하지 않는다.\n\n마지막까지 지 마음대로 하는 새끼.'
+    ],()=>endingScreen('ENDING 04 · 갈림길','마지막까지 지 마음대로 하는 새끼.'));
+  },{speaker:'기태하 · 강무결'});
+}
+function togetherEnding(){
+  if(S.endingStarted||!S.following)return;
+  S.endingStarted=true;
+  pages([
+    '<엔딩 3> 네 번의 생이 주어진다면',
+    '기태하의 손은 차가웠지만, 나는 충분히 따뜻했다.\n함께 문을 나설 사람이 있으니까.\n\n만약에 우리에게 다음 세계가 주어진다면.......\n\n그때는 더 솔직할 수 있을까.',
+    '<STAGE 3> 연옥에서 CLEAR'
+  ],()=>endingScreen('ENDING 03 · 네 번의 생이 주어진다면','두 사람은 함께 미술실 문을 나섰다.'));
 }
 function descendStairs(){
   pages([
@@ -404,7 +604,8 @@ function returnToHall(){
 }
 function returnToStairs(){
   if(S.map!=='artroom')return;
-  switchMap('stairs',735,810,false,()=>toast('계단으로 돌아왔다. 복도는 아래쪽 출입구에 있다.'));
+  if(S.following){togetherEnding();return;}
+  switchMap('stairs',1055,420);
 }
 function showInventory(){
   if(!S.started)return;
@@ -500,29 +701,33 @@ function walkTo(x,y,fn){
 }
 function hotspots(){
   if(S.map==='classroom')return [
-    {name:'교실 문 자물쇠',x:1435,y:346,r:105,go:[1341,350],act:openLock},
-    {name:'게시판',x:1080,y:192,r:158,go:[1260,318],act:investigateBoard},
+    {name:'교실 문 자물쇠',x:1435,y:346,r:105,go:[1341,350],act:classroomDoor},
+    {name:'게시판',x:1080,y:192,r:179,go:[BOARD_POINT.x,BOARD_POINT.y],act:investigateBoard},
     {name:'강무결의 책상',x:1155,y:636,r:105,go:[1270,701],act:investigateOwnDesk},
     {name:'기태하의 책상',x:387,y:642,r:105,go:[451,711],act:investigateTaehaDesk},
     {name:'사물함',x:775,y:853,r:430,go:[775,722],act:investigateLockers},
     {name:'휴지통',x:1420,y:550,r:90,go:[1325,563],act:investigateTrash}
   ];
   if(S.map==='hallway')return [
-    {name:'3-4 교실 문',x:416,y:353,r:107,go:[410,527],act:hallwayPhoto},
+    {name:'3-4 교실 문',x:416,y:353,r:107,go:[410,527],act:hallwayClassDoor},
     {name:'게시판',x:633,y:340,r:160,go:[630,532],act:hallwayPhoto},
     {name:'분리수거함',x:215,y:407,r:94,go:[318,525],act:recycling},
     {name:'계단',x:787,y:806,r:129,go:[787,715],act:enterStairs}
   ];
   if(S.map==='stairs')return [
     {name:'복도로 돌아가기',x:740,y:984,r:120,go:[740,942],act:returnToHall},
-    {name:'위층 계단',x:1030,y:428,r:195,go:[1060,700],act:stairChoices}
+    {name:'위층 계단',x:1030,y:428,r:195,go:[1060,700],act:S.stage2Clear?ascendStairs:stairChoices}
   ];
-  return [{name:'계단으로 돌아가기',x:760,y:996,r:115,go:[760,886],act:returnToStairs}];
+  const art=[{name:S.following?'함께 미술실 나가기':'계단으로 돌아가기',x:760,y:996,r:115,go:[760,886],act:returnToStairs}];
+  if(S.artroomUnlocked&&!S.taehaMet&&!S.endingStarted){
+    art.push({name:'기태하',x:TAEHA_WINDOW.x,y:TAEHA_WINDOW.y-42,r:98,go:[590,502],act:meetTaeha});
+  }
+  return art;
 }
 function hitTest(x,y){
-  if(S.map==='classroom'&&x>=359&&x<=1185&&y>=773&&y<=928){
-    const c=Math.max(0,Math.min(5,Math.floor((x-361)/(824/6))));
-    const r=Math.max(0,Math.min(5,Math.floor((y-774)/(151/6))));
+  if(S.map==='classroom'&&x>=369&&x<=1188&&y>=745&&y<=925){
+    const c=Math.max(0,Math.min(5,Math.round((x-438)/137.5)));
+    const r=Math.max(0,Math.min(5,Math.round((y-759)/28.9)));
     const name=ROSTER[r*6+c];
     return {name:`${name} 사물함`,go:[Math.min(1190,Math.max(371,x)),720],act:()=>{S.visitedCats.add('locker');investigateLocker(name);}};
   }
@@ -575,12 +780,40 @@ function update(dt){
   S.walking=moved;
   if(moved)S.walkClock+=dt;
   else S.walkClock=0;
+  updateTaehaFollower(dt);
+  // Meeting the other character also triggers by walking close to him.
+  if(S.map==='artroom'&&S.artroomUnlocked&&!S.taehaMet&&!S.endingStarted&&
+     len(S.px,S.py,S.taeha.x,S.taeha.y)<128){meetTaeha();return;}
   if(S.map==='hallway'&&S.px>=696&&S.px<=874&&S.py>=741){enterStairs();}
   else if(S.map==='stairs'&&S.px>=658&&S.px<=857&&S.py>=945){returnToHall();}
+  else if(S.map==='stairs'&&S.stage2Clear&&S.px>=925&&S.py<=369){ascendStairs();}
   else if(S.map==='artroom'&&S.px>=660&&S.px<=855&&S.py>=921){returnToStairs();}
 }
+function updateTaehaFollower(dt){
+  if(!S.following||S.map!=='artroom')return;
+  if(S.walking)S.followTrail.push({x:S.px,y:S.py});
+  if(S.followTrail.length>1100)S.followTrail.splice(0,400);
+  const trail=S.followTrail;
+  if(trail.length<2){S.taeha.walking=false;return;}
+  // Follow the route walked by the player, lagging roughly 75 world pixels.
+  let traveled=0,target=trail[0];
+  for(let i=trail.length-1;i>0;i--){
+    traveled+=len(trail[i].x,trail[i].y,trail[i-1].x,trail[i-1].y);
+    target=trail[i-1];
+    if(traveled>=77)break;
+  }
+  const dx=target.x-S.taeha.x,dy=target.y-S.taeha.y;
+  const speed=(len(S.taeha.x,S.taeha.y,S.px,S.py)>160?380:270)*dt;
+  let nx=S.taeha.x,ny=S.taeha.y;
+  if(Math.abs(dx)>1.2){nx+=Math.sign(dx)*Math.min(Math.abs(dx),speed);S.taeha.face=dx>0?1:2;}
+  else if(Math.abs(dy)>1.2){ny+=Math.sign(dy)*Math.min(Math.abs(dy),speed);S.taeha.face=dy>0?0:3;}
+  S.taeha.walking=Math.abs(nx-S.taeha.x)+Math.abs(ny-S.taeha.y)>.3;
+  S.taeha.x=nx;S.taeha.y=ny;
+  if(S.taeha.walking)S.taeha.walkClock+=dt;
+  else S.taeha.walkClock=0;
+}
 function drawLights(){
-  const w=canvas.width,h=canvas.height;
+  const w=MAP_INFO[S.map].w,h=MAP_INFO[S.map].h;
   if(darkLayer.width!==w||darkLayer.height!==h){darkLayer.width=w;darkLayer.height=h;}
   dc.globalCompositeOperation='source-over';dc.clearRect(0,0,w,h);
   dc.fillStyle='rgba(9,6,16,0.91)';dc.fillRect(0,0,w,h);
@@ -590,18 +823,43 @@ function drawLights(){
   dc.fillStyle=gradient;dc.fillRect(0,0,w,h);dc.globalCompositeOperation='source-over';
   ctx.drawImage(darkLayer,0,0);
 }
-function drawCharacter(){
-  if(!sprite.complete||!sprite.naturalWidth)return;
-  // Each 176×236 source cell contains a complete, bottom-aligned sprite.
-  // The outer pixels are transparent padding; no sprite frame is cropped.
+function drawActor(sheet,actor){
+  if(!sheet.complete||!sheet.naturalWidth)return;
+  // The source sheets have 3 columns × 4 rows. Draw all 176×236 pixels of
+  // each cell; never crop to an inferred head/torso rectangle.
   const cycle=[0,1,2,1];
-  const f=S.walking?cycle[Math.floor(S.walkClock*8.5)%cycle.length]:0;
+  const f=actor.walking?cycle[Math.floor(actor.walkClock*8.5)%cycle.length]:0;
   const w=81,h=109;
   ctx.save();ctx.imageSmoothingEnabled=false;
   ctx.fillStyle='rgba(23,13,18,.26)';
-  ctx.beginPath();ctx.ellipse(S.px,S.py-4,24,8,0,0,Math.PI*2);ctx.fill();
-  ctx.drawImage(sprite,f*SPRITE_TILE.w,S.face*SPRITE_TILE.h,SPRITE_TILE.w,SPRITE_TILE.h,Math.round(S.px-w/2),Math.round(S.py-h+3),w,h);
+  ctx.beginPath();ctx.ellipse(actor.x,actor.y-4,24,8,0,0,Math.PI*2);ctx.fill();
+  ctx.drawImage(sheet,f*SPRITE_TILE.w,actor.face*SPRITE_TILE.h,SPRITE_TILE.w,SPRITE_TILE.h,Math.round(actor.x-w/2),Math.round(actor.y-h+3),w,h);
   ctx.restore();
+}
+function drawCharacters(){
+  const player={x:S.px,y:S.py,face:S.face,walking:S.walking,walkClock:S.walkClock};
+  if(S.map!=='artroom'||!S.artroomUnlocked||S.failureDark){drawActor(sprite,player);return;}
+  // Correct painter order prevents the other sprite from obscuring the head.
+  if(S.taeha.y<S.py){drawActor(taehaSprite,S.taeha);drawActor(sprite,player);}
+  else {drawActor(sprite,player);drawActor(taehaSprite,S.taeha);}
+}
+function drawArtroomDarkness(now){
+  const w=MAP_INFO.artroom.w,h=MAP_INFO.artroom.h;
+  if(darkLayer.width!==w||darkLayer.height!==h){darkLayer.width=w;darkLayer.height=h;}
+  dc.globalCompositeOperation='source-over';dc.clearRect(0,0,w,h);
+  dc.fillStyle=S.failureDark?'rgba(5,3,12,.94)':'rgba(7,5,17,.83)';dc.fillRect(0,0,w,h);
+  if(!S.failureDark){
+    dc.globalCompositeOperation='destination-out';
+    const grad=dc.createRadialGradient(S.px,S.py-45,18,S.px,S.py-45,240);
+    grad.addColorStop(0,'rgba(0,0,0,.78)');
+    grad.addColorStop(.50,'rgba(0,0,0,.38)');
+    grad.addColorStop(1,'rgba(0,0,0,0)');
+    dc.fillStyle=grad;dc.fillRect(0,0,w,h);
+  }
+  dc.globalCompositeOperation='source-over';
+  const reveal=S.artroomUnlocked&&!S.failureDark
+    ?Math.max(0,1-(now-S.artroomRevealAt)/900):1;
+  ctx.save();ctx.globalAlpha=reveal;ctx.drawImage(darkLayer,0,0);ctx.restore();
 }
 function drawLockerX(){
   if(S.map!=='classroom')return;
@@ -609,7 +867,7 @@ function drawLockerX(){
   for(const name of S.visitedLockers){
     if(name==='명예희')continue;
     const i=ROSTER.indexOf(name);if(i<0)continue;
-    const col=i%6,row=Math.floor(i/6),x=433+col*136.6,y=789+row*23.2;
+    const col=i%6,row=Math.floor(i/6),x=438+col*137.5,y=759+row*28.9;
     ctx.strokeStyle='rgba(226,45,58,.94)';ctx.beginPath();ctx.moveTo(x-11,y-8);ctx.lineTo(x+11,y+9);ctx.moveTo(x+11,y-8);ctx.lineTo(x-11,y+9);ctx.stroke();
   }
   ctx.restore();
@@ -632,12 +890,21 @@ function drawDebug(){
 }
 function draw(now){
   if(!S.started)return;
-  const info=MAP_INFO[S.map];
-  ctx.clearRect(0,0,info.w,info.h);
-  const bg=images[S.map];if(bg.complete&&bg.naturalWidth){ctx.imageSmoothingEnabled=true;ctx.drawImage(bg,0,0,info.w,info.h);}
-  drawLockerX();drawNearMarkers(now);drawCharacter();
+  const info=MAP_INFO[S.map],cam=camera();
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0,0,viewport.w,viewport.h);
+  // Preserve the background's native proportions; move a 16:9 / 3:4 camera,
+  // rather than stretching a whole 3:2 map into a widescreen canvas.
+  ctx.save();
+  const scale=viewport.w/cam.w;
+  ctx.setTransform(scale,0,0,scale,-cam.x*scale,-cam.y*scale);
+  const bg=images[S.map];
+  if(bg.complete&&bg.naturalWidth){ctx.imageSmoothingEnabled=true;ctx.drawImage(bg,0,0,info.w,info.h);}
+  drawLockerX();drawNearMarkers(now);drawCharacters();
   if(S.map==='classroom'&&!S.explored&&!S.stage1Clear)drawLights();
+  if(S.map==='artroom'&&(!S.artroomUnlocked||S.failureDark||now-S.artroomRevealAt<900))drawArtroomDarkness(now);
   if(S.debug)drawDebug();
+  ctx.restore();
 }
 function loop(time){
   const dt=Math.min((time-prevTime)/1000||0,.038);prevTime=time;
@@ -648,7 +915,7 @@ canvas.addEventListener('click',(e)=>{
   if(!S.started||S.transitioning||isOverlayOpen())return;
   dismissMoveMenu();
   if(S.dlg)return;
-  const b=canvas.getBoundingClientRect();const x=(e.clientX-b.left)/b.width*canvas.width,y=(e.clientY-b.top)/b.height*canvas.height;
+  const {x,y}=pointerToWorld(e);
   const hit=hitTest(x,y);
   if(hit){if(S.map==='classroom'&&!S.explored){toast('먼저 교실을 둘러보세요.');return;}walkTo(hit.go[0],hit.go[1],hit.act);return;}
   if(S.map==='classroom'&&!S.explored){toast('먼저 교실을 둘러보세요.');return;}
@@ -656,7 +923,7 @@ canvas.addEventListener('click',(e)=>{
 });
 canvas.addEventListener('mousemove',e=>{
   if(S.dlg||!S.started||isOverlayOpen()){canvas.style.cursor='default';return;}
-  const r=canvas.getBoundingClientRect(),x=(e.clientX-r.left)/r.width*canvas.width,y=(e.clientY-r.top)/r.height*canvas.height;
+  const {x,y}=pointerToWorld(e);
   canvas.style.cursor=hitTest(x,y)?'pointer':'crosshair';
 });
 function nearestAction(){
@@ -673,7 +940,7 @@ window.addEventListener('keydown',e=>{
   const typ=['INPUT','TEXTAREA'].includes(document.activeElement?.tagName);
   if(e.key==='Escape'){
     if(!$('endingOverlay').classList.contains('hidden'))return;
-    const shown=['inventoryOverlay','lockerOverlay','lockOverlay','helpOverlay','rosterOverlay'].find(id=>!$(id).classList.contains('hidden'));
+    const shown=['inventoryOverlay','lockerOverlay','lockOverlay','rosterOverlay'].find(id=>!$(id).classList.contains('hidden'));
     if(shown){cancelModal(shown);e.preventDefault();return;}
     if(S.map==='stairs'&&S.dlg){closeDialog();toast('아래쪽 출입구로 이동하면 복도로 돌아갈 수 있습니다.');e.preventDefault();return;}
     if(S.dlg?.kind==='pages'){skipDialogue();e.preventDefault();return;}
@@ -705,7 +972,6 @@ $('startButton').onclick=startGame;
 $('nextButton').onclick=nextDialogue;
 $('skipButton').onclick=skipDialogue;
 $('inventoryButton').onclick=showInventory;
-$('hintButton').onclick=()=>$('helpOverlay').classList.remove('hidden');
 $('rosterPeek').onclick=()=>$('rosterOverlay').classList.remove('hidden');
 $('musicButton').onclick=()=>{
   S.muted=!S.muted;
@@ -725,12 +991,15 @@ $('lockSkip').onclick=()=>cancelModal('lockOverlay');
 $('replayButton').onclick=()=>{hideAllOverlays();bgm.currentTime=0;startGame();};
 for(const b of document.querySelectorAll('.close-overlay'))b.addEventListener('click',()=>cancelModal(b.dataset.close));
 for(const b of document.querySelectorAll('.mobile-pad [data-dir]')){
-  b.addEventListener('pointerdown',e=>{e.preventDefault();dismissMoveMenu();S.mobileKeys.add(b.dataset.dir);b.setPointerCapture(e.pointerId);});
+  b.addEventListener('pointerdown',e=>{e.preventDefault();dismissMoveMenu();S.mobileKeys.add(b.dataset.dir);try{b.setPointerCapture(e.pointerId);}catch{}});
   const up=()=>S.mobileKeys.delete(b.dataset.dir);
   b.addEventListener('pointerup',up);b.addEventListener('pointercancel',up);b.addEventListener('lostpointercapture',up);
 }
-$('touchAction').onclick=nearestAction;
+$('touchAction').onclick=()=>{if(S.dlg?.kind==='pages')nextDialogue();else nearestAction();};
+$('leaveLockersButton').onclick=()=>cancelModal('lockerOverlay');
+window.addEventListener('resize',configureCanvas);
+window.addEventListener('orientationchange',configureCanvas);
 // Public read-only diagnostic data for future stage integration and smoke tests.
-window.BAEKSEOK_DEBUG={state:S,MAP_INFO,ROSTER,visitLocker:investigateLocker,showLock:openLock,enterStairs,returnToHall};
+window.BAEKSEOK_DEBUG={state:S,MAP_INFO,ROSTER,visitLocker:investigateLocker,showLock:openLock,enterStairs,returnToHall,enterArtroom,artroomItemChoices,tryArtroomItem,meetTaeha,ascendStairs,togetherEnding,returnToStairs,follow:updateTaehaFollower,walkTo,findPath,collision};
 requestAnimationFrame(loop);
 })();

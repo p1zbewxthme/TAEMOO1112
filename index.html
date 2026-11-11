@@ -20,7 +20,6 @@
     <div class="topbar">
       <div class="brand"><span class="brand-dot"></span><span>BAEKSEOK</span><span class="topbar-divider">/</span><span id="stageCaption">STAGE 01</span></div>
       <div class="toolbar">
-        <button type="button" id="hintButton" class="tool-button" title="조작 안내">?<span class="tool-caption"> 조작</span></button>
         <button type="button" id="inventoryButton" class="tool-button" title="소지품 보기">▣<span class="tool-caption"> 소지품</span><span id="itemCount" class="item-count">0</span></button>
         <button type="button" id="musicButton" class="tool-button" aria-label="음악 끄기">♫<span id="musicLabel" class="tool-caption"> 음악 켜짐</span></button>
       </div>
@@ -28,18 +27,22 @@
     <div class="screen-frame">
       <div id="sceneName" class="scene-name">3학년 4반 · 교실</div>
       <canvas id="gameCanvas" width="1536" height="1024" tabindex="0" aria-label="방향키로 이동하고 사물을 클릭하는 학교 탐색 지도"></canvas>
-      <div id="clickTip" class="click-tip">화살표 키로 이동 · 사물을 클릭하여 조사</div>
       <div id="toast" role="status" class="toast hidden"></div>
+      <div id="itemPickup" class="item-pickup hidden" role="status" aria-live="polite" aria-label="아이템 획득">
+        <img id="pickupImage" src="assets/items/paper.webp" alt="" />
+        <div class="pickup-label"><span>ITEM GET</span><strong id="pickupName"></strong></div>
+      </div>
       <div id="fadeCover" class="fade-cover"></div>
-    </div>
-
     <div id="dialogueBox" class="dialogue-box hidden" aria-live="polite">
       <div class="dialogue-head"><span id="speaker" class="speaker">강무결</span><span id="dialogueCounter" class="dialogue-counter"></span></div>
       <div id="dialogueBody" class="dialogue-body"></div>
+      <img id="dialogueIllustration" class="dialogue-illustration hidden" alt="대화 중 등장한 아이템 이미지" />
       <div id="choiceArea" class="choice-area hidden"></div>
       <div class="dialogue-actions"><button id="rosterPeek" type="button" class="text-button roster-peek hidden">▤ 출석부 보기</button><button id="skipButton" class="text-button" type="button">SKIP</button><button id="nextButton" class="next-button" type="button" title="다음 대사">▼ <span>다음</span></button></div>
     </div>
-    <footer class="bottom-strip"><span>BAEKSEOK · 3-4</span><span id="statusLine">강무결 · 교실</span><span>ESC / SPACE / ENTER</span></footer>
+    </div>
+
+    <footer class="bottom-strip"><span>BAEKSEOK · 3-4</span><span id="statusLine">강무결 · 교실</span></footer>
     <div class="mobile-pad" aria-label="모바일 이동 패드">
       <button type="button" data-dir="ArrowUp" aria-label="위로 이동">▲</button>
       <div><button type="button" data-dir="ArrowLeft" aria-label="왼쪽 이동">◀</button><button type="button" id="touchAction" aria-label="조사하기">●</button><button type="button" data-dir="ArrowRight" aria-label="오른쪽 이동">▶</button></div>
@@ -51,7 +54,7 @@
     <div class="modal inventory-modal"><div class="modal-header"><div><small>INVENTORY</small><h2>소지품</h2></div><button class="close-overlay" data-close="inventoryOverlay" aria-label="닫기">×</button></div><div id="inventoryGrid" class="inventory-grid"></div><p class="modal-footnote">조사 중 획득한 물품이 이곳에 보관됩니다.</p></div>
   </div>
   <div id="lockerOverlay" class="overlay hidden" role="dialog" aria-modal="true" aria-label="학생 사물함 목록">
-    <div class="modal locker-modal"><div class="modal-header"><div><small>CLASS 3-4</small><h2>사물함 조사</h2><p>이름표를 선택해 사물함을 열어 보세요.</p></div><button class="close-overlay" data-close="lockerOverlay" aria-label="닫기">×</button></div><div id="lockerGrid" class="locker-grid"></div><p class="modal-footnote"><span class="marked-example">✕</span> 이미 조사한 사물함 · 명예희 사물함에는 X가 표시되지 않습니다.</p></div>
+    <div class="modal locker-modal"><div class="modal-header"><div><small>CLASS 3-4</small><h2>사물함 조사</h2><p>이름표를 선택해 사물함을 열어 보세요.</p></div><button class="close-overlay" data-close="lockerOverlay" aria-label="닫기">×</button></div><div id="lockerGrid" class="locker-grid"></div><div class="locker-footer"><button type="button" id="leaveLockersButton" class="leave-lockers-button">그만 살펴본다</button></div></div>
   </div>
   <div id="lockOverlay" class="overlay hidden" role="dialog" aria-modal="true" aria-label="교실 자물쇠">
     <div class="modal lock-modal"><div class="modal-header"><div><small>OBJECT · PADLOCK</small><h2>교실 문 자물쇠</h2></div><button class="close-overlay" data-close="lockOverlay" aria-label="닫기">×</button></div><img id="lockImage" alt="교실 문 자물쇠" src="assets/items/lock-default.webp" class="lock-art" /><p class="lock-explanation">자물쇠는 비밀번호로 열 수 있다.</p><form id="lockForm" autocomplete="off"><label for="lockPin">네 자리 비밀번호</label><input id="lockPin" type="text" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="••••" required aria-label="네 자리 비밀번호" /><button class="primary-button small-primary" type="submit">확인 ▼</button></form><div class="lock-extra-actions"><button id="lockSkip" class="text-button" type="button">SKIP</button></div></div>
@@ -61,9 +64,6 @@
   </div>
   <div id="rosterOverlay" class="overlay hidden" role="dialog" aria-modal="true" aria-label="3학년 4반 출석부">
     <div class="modal roster-modal"><div class="modal-header"><div><small>CLASS 3-4</small><h2>3학년 4반 출석부</h2></div><button class="close-overlay" data-close="rosterOverlay" aria-label="닫기">×</button></div><img src="assets/props/class-roster.jpg" alt="양금희 선생님과 3학년 4반 학생들의 출석부" /></div>
-  </div>
-  <div id="helpOverlay" class="overlay hidden" role="dialog" aria-modal="true" aria-label="조작법">
-    <div class="modal help-modal"><div class="modal-header"><div><small>HOW TO PLAY</small><h2>조작 방법</h2></div><button class="close-overlay" data-close="helpOverlay" aria-label="닫기">×</button></div><p>방향키 또는 WASD로 강무결을 상하좌우로 이동합니다. 사물을 클릭하면 그곳까지 이동해 조사합니다. 가까운 물체는 스페이스바로도 조사할 수 있습니다.</p><p>대사창에서 <b>▼</b> 또는 Enter를 누르면 다음 대사가 나타나고, <b>SKIP</b>으로 현재 대화를 넘길 수 있습니다. 선택지는 직접 골라야 합니다.</p><p>사물함은 아래쪽 이름표를 클릭하거나, 사물함 가까이에서 조사 목록을 열어 선택합니다. 소지품은 오른쪽 상단에서 확인할 수 있습니다.</p><p>계단에서는 아래쪽 출입구로 돌아가면 복도로 복귀할 수 있습니다. 미술실 이후 전개는 다음 기획서에서 이어집니다.</p></div>
   </div>
   <audio id="bgm" src="assets/audio/bgm.mp3" preload="auto" loop></audio>
   <audio id="stairSound" src="assets/audio/stair-sfx.wav" preload="auto"></audio>
